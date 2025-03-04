@@ -37,7 +37,67 @@ Rid Table::InsertRecord(std::shared_ptr<Record> record, xid_t xid, cid_t cid, bo
   // 找到空间足够的页面后，通过 TablePage 插入记录
   // 返回插入记录的 rid
   // LAB 1 BEGIN
-  return {0, 0};
+  pageid_t currentPageId = 0;
+  slotid_t slotId = 0;
+  
+  // If there's no first page, create one and insert the record into it.
+  if (first_page_id_ == NULL_PAGE_ID) {
+    first_page_id_ = 0;
+    auto firstPage = buffer_pool_.NewPage(db_oid_, oid_, first_page_id_);
+    TablePage firstTablePage(firstPage);
+    firstTablePage.Init();
+    slotId = firstTablePage.InsertRecord(record, xid, cid);
+
+    if (write_log) {
+        // Offset points to the head of the inserted record after updating the upper pointer.
+        db_size_t offset = firstTablePage.GetUpper();
+        char* newRecord = firstTablePage.GetPageData() + offset;
+
+        log_manager_.AppendNewPageLog(xid, oid_, NULL_PAGE_ID, first_page_id_);
+        auto lsn = log_manager_.AppendInsertLog(xid, oid_, first_page_id_, slotId, offset, record->GetSize(), newRecord);
+        firstTablePage.SetPageLSN(lsn);
+    }
+    
+    } else {
+        // Traverse existing pages to find a page with enough free space.
+        while (currentPageId != NULL_PAGE_ID) {
+            auto currentPage = buffer_pool_.GetPage(db_oid_, oid_, currentPageId);
+            TablePage tablePage(currentPage);
+            
+            // If the current page can accommodate the record, insert it.
+            if (tablePage.GetFreeSpaceSize() >= record->GetSize()) {
+                slotId = tablePage.InsertRecord(record, xid, cid);
+                
+                if (write_log) {
+                    db_size_t offset = tablePage.GetUpper();
+                    char* newRecord = tablePage.GetPageData() + offset;
+                    auto lsn = log_manager_.AppendInsertLog(xid, oid_, currentPageId, slotId, offset, record->GetSize(), newRecord);
+                    tablePage.SetPageLSN(lsn);
+                    }
+                break;
+            }
+            
+            // If there is no next page, create a new page.
+            if (tablePage.GetNextPageId() == NULL_PAGE_ID) {
+                auto newPage = buffer_pool_.NewPage(db_oid_, oid_, currentPageId + 1);
+                TablePage newTablePage(newPage);
+                newTablePage.Init();
+                tablePage.SetNextPageId(currentPageId + 1);
+                slotId = newTablePage.InsertRecord(record, xid, cid);
+                
+                if (write_log) {
+                    db_size_t offset = newTablePage.GetUpper();
+                    char* newRecord = newTablePage.GetPageData() + offset;
+                    log_manager_.AppendNewPageLog(xid, oid_, currentPageId, currentPageId + 1);
+                    auto lsn = log_manager_.AppendInsertLog(xid, oid_, currentPageId + 1, slotId, offset, record->GetSize(), newRecord);
+                    newTablePage.SetPageLSN(lsn);
+                }
+            break;
+        }
+        currentPageId = tablePage.GetNextPageId();
+        }
+    }
+  return {currentPageId, slotId};
 }
 
 void Table::DeleteRecord(const Rid &rid, xid_t xid, bool write_log) {
@@ -47,8 +107,15 @@ void Table::DeleteRecord(const Rid &rid, xid_t xid, bool write_log) {
 
   // 使用 TablePage 操作页面
   // LAB 1 BEGIN
-}
-
+  auto page = buffer_pool_.GetPage(db_oid_, oid_, rid.page_id_);
+  TablePage table_page(page);
+  table_page.DeleteRecord(rid.slot_id_, xid);
+  
+  if (write_log) {
+    auto lsn = log_manager_.AppendDeleteLog(xid, oid_, rid.page_id_, rid.slot_id_);
+    table_page.SetPageLSN(lsn);
+    }
+    }
 Rid Table::UpdateRecord(const Rid &rid, xid_t xid, cid_t cid, std::shared_ptr<Record> record, bool write_log) {
   DeleteRecord(rid, xid, write_log);
   return InsertRecord(record, xid, cid, write_log);

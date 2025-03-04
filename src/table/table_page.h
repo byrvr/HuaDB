@@ -47,6 +47,9 @@ class TablePage {
   db_size_t GetLower() const;
   // 获取页面 upper 指针
   db_size_t GetUpper() const;
+  
+  // obtain page_data
+  char* GetPageData() const;
 
   // 获取页面剩余空间大小
   db_size_t GetFreeSpaceSize() const;

@@ -1,6 +1,8 @@
 #include "table/table_page.h"
-
+#include <string>
 #include <sstream>
+#include "common/constants.h"
+#include "common/types.h"
 
 namespace huadb {
 
@@ -32,12 +34,30 @@ slotid_t TablePage::InsertRecord(std::shared_ptr<Record> record, xid_t xid, cid_
   // LAB 3 BEGIN
 
   // 维护 lower 和 upper 指针
+  record->SetXmin(xid);
+  record->SetCid(cid);
+
   // 设置 slots 数组
   // 将 record 写入 page data
   // 将 page 标记为 dirty
   // 返回插入的 slot id
   // LAB 1 BEGIN
-  return 0;
+  // Calculate the new slot index based on current lower pointer position
+  auto slotId = (*lower_ - PAGE_HEADER_SIZE) / sizeof(Slot);
+  
+  // Update the pointers for record insertion
+  *upper_ -= record->GetSize();
+  *lower_ += sizeof(Slot);
+  
+  // Create and store the new slot in the slot array
+  Slot newSlot{*upper_, record->GetSize()};
+  slots_[slotId] = newSlot;
+  
+  // Write the record to the appropriate page data position
+  record->SerializeTo(page_data_ + *upper_);
+  page_->SetDirty();
+  
+  return slotId;
 }
 
 void TablePage::DeleteRecord(slotid_t slot_id, xid_t xid) {
@@ -48,6 +68,11 @@ void TablePage::DeleteRecord(slotid_t slot_id, xid_t xid) {
   // 可使用 Record::DeserializeHeaderFrom 函数读取记录头
   // 将 page 标记为 dirty
   // LAB 1 BEGIN
+  auto slotOffset = slots_[slot_id].offset_;
+  auto* recPtr = page_data_ + slotOffset;
+  
+  // Set the first byte of the record to 1
+  recPtr[0] = 1;
 }
 
 void TablePage::UpdateRecordInPlace(const Record &record, slotid_t slot_id) {
@@ -59,7 +84,13 @@ std::shared_ptr<Record> TablePage::GetRecord(Rid rid, const ColumnList &column_l
   // 根据 slot_id 获取 record
   // 新建 record 并设置 rid
   // LAB 1 BEGIN
-  return nullptr;
+  auto slotIndex = rid.slot_id_;
+  auto recordOffset = slots_[slotIndex].offset_;
+  
+  auto newRecord = std::make_shared<Record>();
+  newRecord->SetRid(rid);
+  newRecord->DeserializeFrom(page_data_ + recordOffset, column_list);
+  return newRecord;
 }
 
 void TablePage::UndoDeleteRecord(slotid_t slot_id) {
@@ -87,6 +118,8 @@ pageid_t TablePage::GetNextPageId() const { return *next_page_id_; }
 db_size_t TablePage::GetLower() const { return *lower_; }
 
 db_size_t TablePage::GetUpper() const { return *upper_; }
+
+char *TablePage::GetPageData() const { return page_data_; }
 
 db_size_t TablePage::GetFreeSpaceSize() const {
   if (*upper_ < *lower_ + sizeof(Slot)) {

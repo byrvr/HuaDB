@@ -2,6 +2,7 @@
 
 #include "common/exceptions.h"
 #include "log/log_records/log_records.h"
+#include "table/table_page.h"
 
 namespace huadb {
 
@@ -177,6 +178,59 @@ void LogManager::Rollback(xid_t xid) {
   // 通过 LogRecord::DeserializeFrom 函数解析日志
   // 调用日志的 Undo 函数
   // LAB 2 BEGIN
+
+  // Retrieve the initial log sequence number for this transaction
+  lsn_t current_sequence = att_.find(xid)->second;
+
+  // Process all log entries for this transaction until reaching the beginning
+  for (; current_sequence != NULL_LSN; ) {
+    // Determine if the log record is in memory or on disk
+    if (current_sequence > flushed_lsn_) {
+      // Search in memory buffer for the log entry
+      bool found = false;
+      for (auto buffer_iter = log_buffer_.begin(); buffer_iter != log_buffer_.end(); ++buffer_iter) {
+        std::shared_ptr<LogRecord> current_record = *buffer_iter;
+
+        // Found the matching record in the buffer
+        if (current_record->GetLSN() == current_sequence) {
+          // Get the previous log entry in the chain before undoing
+          lsn_t previous_sequence = current_record->GetPrevLSN();
+
+          // Execute undo operation for this record
+          current_record->Undo(*buffer_pool_, *catalog_, *this, previous_sequence);
+
+          // Move to the previous record in the chain
+          current_sequence = previous_sequence;
+          found = true;
+          break;
+        }
+      }
+
+      // Sanity check - should always find the record
+      if (!found) {
+        throw std::runtime_error("Log record not found in buffer");
+      }
+    }
+    else {
+      // Retrieve record from persistent storage
+      std::vector<char> log_data(MAX_LOG_SIZE);
+
+      // Read the log entry from disk
+      disk_.ReadLog(current_sequence, MAX_LOG_SIZE, log_data.data());
+
+      // Deserialize the log record
+      auto log_entry = LogRecord::DeserializeFrom(current_sequence, log_data.data());
+
+      // Get the previous log entry in the chain
+      lsn_t previous_sequence = log_entry->GetPrevLSN();
+
+      // Execute undo operation for this record
+      log_entry->Undo(*buffer_pool_, *catalog_, *this, previous_sequence);
+
+      // Move to the previous record in the chain
+      current_sequence = previous_sequence;
+    }
+  }
 }
 
 void LogManager::Recover() {
@@ -249,16 +303,218 @@ void LogManager::Analyze() {
   // 根据 Checkpoint 日志恢复脏页表、活跃事务表等元信息
   // 必要时调用 transaction_manager_.SetNextXid 来恢复事务 id
   // LAB 2 BEGIN
+
+  // Initialize sequence number tracking to start from checkpoint
+  lsn_t current_position = checkpoint_lsn;
+  // Set recovery starting position
+  smallest_sequence_num_ = checkpoint_lsn;
+
+  // Allocate buffer for reading log records
+  std::vector<char> buffer_memory(MAX_LOG_SIZE);
+  char* log_buffer = buffer_memory.data();
+
+  // PHASE 1: Scan for END_CHECKPOINT record to retrieve transaction and dirty page state
+  while (current_position < next_lsn_) {
+    // Read log record from persistent storage
+    disk_.ReadLog(current_position, MAX_LOG_SIZE, log_buffer);
+
+    // Deserialize the log record
+    std::shared_ptr<LogRecord> log_entry = LogRecord::DeserializeFrom(current_position, log_buffer);
+
+    // Check if this is the end checkpoint record we're looking for
+    if (log_entry->GetType() == LogType::END_CHECKPOINT) {
+      // Cast to checkpoint record type to access tables
+      auto checkpoint_record = std::dynamic_pointer_cast<EndCheckpointLog>(log_entry);
+
+      // Restore active transaction table and dirty page table from checkpoint
+      att_ = checkpoint_record->GetATT();
+      dpt_ = checkpoint_record->GetDPT();
+
+      // Exit the first scan loop once we find the checkpoint record
+      break;
+    }
+
+    current_position += log_entry->GetSize();
+  }
+
+  // PHASE 2: Process all logs after checkpoint to rebuild state
+  current_position = checkpoint_lsn;
+
+  // Scan forward through all logs after checkpoint
+  while (current_position < next_lsn_) {
+    // Read and deserialize log record
+    disk_.ReadLog(current_position, MAX_LOG_SIZE, log_buffer);
+    std::shared_ptr<LogRecord> log_entry = LogRecord::DeserializeFrom(current_position, log_buffer);
+
+    // Get transaction ID from log record
+    xid_t transaction_id = log_entry->GetXid();
+
+    // Process based on log record type
+    LogType record_type = log_entry->GetType();
+
+    // Handle transaction records (INSERT, DELETE, NEW_PAGE)
+    bool is_modification_record = (record_type == LogType::INSERT ||
+                                  record_type == LogType::DELETE ||
+                                  record_type == LogType::NEW_PAGE);
+
+    // Update active transaction table for modification records
+    if (is_modification_record) {
+      att_[transaction_id] = current_position;
+    }
+
+    // Handle transaction commit
+    if (record_type == LogType::COMMIT) {
+      // Remove from active transactions if present
+      if (att_.find(transaction_id) != att_.end()) {
+        att_.erase(transaction_id);
+      }
+    }
+
+    // Update transaction ID counter if needed
+    if (transaction_id > transaction_manager_.GetNextXid()) {
+      transaction_manager_.SetNextXid(transaction_id);
+    }
+
+    // Extract page information from record
+    auto coordinates = ExtractRecordCoordinates(log_entry);
+    oid_t object_id = coordinates.first;
+    pageid_t page_location = coordinates.second;
+
+    // Update dirty page table for modification records
+    if (is_modification_record) {
+      // Add to dirty page table if not already present
+      if (dpt_.find({object_id, page_location}) == dpt_.end()) {
+        dpt_[{object_id, page_location}] = current_position;
+      }
+    }
+
+    // Move to next log record
+    current_position += log_entry->GetSize();
+  }
 }
 
 void LogManager::Redo() {
   // 正序读取日志，调用日志记录的 Redo 函数
   // LAB 2 BEGIN
+
+  // Start from the recovery beginning position
+  lsn_t current_lsn = smallest_sequence_num_;
+
+  // Find the earliest log entry that needs to be redone
+  for (const auto& dirty_page_entry : dpt_) {
+    lsn_t recovery_lsn = dirty_page_entry.second;
+    if (recovery_lsn < current_lsn) {
+      current_lsn = recovery_lsn;
+    }
+  }
+
+  // Use vector for safer memory management
+  std::vector<char> log_storage(MAX_LOG_SIZE);
+  char* log_buffer = log_storage.data();
+
+  // Process all logs from earliest needed LSN to the latest
+  while (current_lsn < next_lsn_) {
+    // Read and deserialize the log record
+    disk_.ReadLog(current_lsn, MAX_LOG_SIZE, log_buffer);
+    auto log_entry = LogRecord::DeserializeFrom(current_lsn, log_buffer);
+
+    // Extract page information
+    auto record_location = ExtractRecordCoordinates(log_entry);
+    oid_t object_id = record_location.first;
+    pageid_t page_location = record_location.second;
+
+    // Check if this is a modification record
+    bool is_data_modification = (log_entry->GetType() == LogType::INSERT ||
+                                log_entry->GetType() == LogType::DELETE ||
+                                log_entry->GetType() == LogType::NEW_PAGE);
+
+    if (is_data_modification) {
+      // Check if page is in dirty page table
+      if (dpt_.find({object_id, page_location}) != dpt_.end()) {
+        // Get recovery LSN for this page
+        lsn_t recovery_lsn = dpt_[{object_id, page_location}];
+
+        // Only redo if this log entry should be applied
+        if (current_lsn >= recovery_lsn) {
+          if (log_entry->GetType() == LogType::NEW_PAGE) {
+            // For new pages, always apply the redo operation
+            log_entry->Redo(*buffer_pool_, *catalog_, *this);
+          } else {
+            // For existing pages, check the page LSN first
+            oid_t database_id = catalog_->GetDatabaseOid(object_id);
+            auto page_ptr = buffer_pool_->GetPage(database_id, object_id, page_location);
+            TablePage table_page(page_ptr);
+            lsn_t page_sequence_num = table_page.GetPageLSN();
+
+            // Only redo if the page hasn't been refreshed after this log entry
+            if (current_lsn > page_sequence_num) {
+              log_entry->Redo(*buffer_pool_, *catalog_, *this);
+            }
+          }
+        }
+      }
+    }
+
+    // Move to the next log entry
+    current_lsn += log_entry->GetSize();
+  }
 }
 
 void LogManager::Undo() {
   // 根据活跃事务表，将所有活跃事务回滚
   // LAB 2 BEGIN
+
+  // Iterate through all entries in the active transaction table
+  auto transaction_iter = att_.begin();
+  while (transaction_iter != att_.end()) {
+    // Extract transaction ID from the current entry
+    xid_t transaction_id = transaction_iter->first;
+
+    // Perform rollback operation for this transaction
+    Rollback(transaction_id);
+
+    // Move to next transaction in the table
+    ++transaction_iter;
+  }
+
+}
+
+std::pair<oid_t, pageid_t> LogManager::ExtractRecordCoordinates(const std::shared_ptr<LogRecord> &log_entry) {
+  // Initialize return values
+  oid_t entity_identifier = 0;
+  pageid_t page_location = 0;
+
+  // Extract information based on log entry type
+  const LogType entry_type = log_entry->GetType();
+
+  // Handle INSERT records
+  if (entry_type == LogType::INSERT) {
+    auto insert_entry = std::dynamic_pointer_cast<InsertLog>(log_entry);
+    if (insert_entry) {
+      page_location = insert_entry->GetPageId();
+      entity_identifier = insert_entry->GetOid();
+    }
+  }
+  // Handle DELETE records
+  else if (entry_type == LogType::DELETE) {
+    auto removal_entry = std::dynamic_pointer_cast<DeleteLog>(log_entry);
+    if (removal_entry) {
+      page_location = removal_entry->GetPageId();
+      entity_identifier = removal_entry->GetOid();
+    }
+  }
+  // Handle NEW_PAGE records
+  else if (entry_type == LogType::NEW_PAGE) {
+    auto page_creation_entry = std::dynamic_pointer_cast<NewPageLog>(log_entry);
+    if (page_creation_entry) {
+      page_location = page_creation_entry->GetPageId();
+      entity_identifier = page_creation_entry->GetOid();
+    }
+  }
+  // Other log types remain with default values (implicit)
+
+  // Return the coordinate pair
+  return {entity_identifier, page_location};
 }
 
 }  // namespace huadb

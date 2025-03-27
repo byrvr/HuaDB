@@ -1,4 +1,5 @@
 #include "table/table_page.h"
+#include <ostream>
 #include <string>
 #include <sstream>
 #include "common/constants.h"
@@ -61,18 +62,21 @@ slotid_t TablePage::InsertRecord(std::shared_ptr<Record> record, xid_t xid, cid_
 }
 
 void TablePage::DeleteRecord(slotid_t slot_id, xid_t xid) {
-  // 更改实验 1 的实现，改为通过 xid 标记删除
-  // LAB 3 BEGIN
-
   // 将 slot_id 对应的 record 标记为删除
   // 可使用 Record::DeserializeHeaderFrom 函数读取记录头
   // 将 page 标记为 dirty
   // LAB 1 BEGIN
   auto slotOffset = slots_[slot_id].offset_;
   auto* recPtr = page_data_ + slotOffset;
-  
+
   // Set the first byte of the record to 1
   recPtr[0] = 1;
+
+  // 更改实验 1 的实现，改为通过 xid 标记删除
+  // LAB 3 BEGIN
+  auto* transaction_marker = reinterpret_cast<xid_t*>(recPtr + 5);
+  *transaction_marker = xid;
+  page_->SetDirty();
 }
 
 void TablePage::UpdateRecordInPlace(const Record &record, slotid_t slot_id) {
@@ -94,12 +98,15 @@ std::shared_ptr<Record> TablePage::GetRecord(Rid rid, const ColumnList &column_l
 }
 
 void TablePage::UndoDeleteRecord(slotid_t slot_id) {
-  // 修改 undo delete 的逻辑
-  // LAB 3 BEGIN
-
   // 清除记录的删除标记
   // 将页面设为 dirty
   // LAB 2 BEGIN
+  auto record_offset = slots_[slot_id].offset_;
+  auto *record_ptr = page_data_ + record_offset;
+  record_ptr[0] = 0;
+
+  // 修改 undo delete 的逻辑
+  // LAB 3 BEGIN
 }
 
 void TablePage::RedoInsertRecord(slotid_t slot_id, char *raw_record, db_size_t page_offset, db_size_t record_size) {
@@ -107,6 +114,19 @@ void TablePage::RedoInsertRecord(slotid_t slot_id, char *raw_record, db_size_t p
   // 注意维护 lower 和 upper 指针，以及 slots 数组
   // 将页面设为 dirty
   // LAB 2 BEGIN
+  *upper_ -= record_size;
+  *lower_ += sizeof(Slot);
+
+  Slot slot_entry = {
+    page_offset,
+    record_size
+};
+  slots_[slot_id] = slot_entry;
+
+  char *destination_ptr = page_data_ + page_offset;
+  memcpy(destination_ptr, raw_record, record_size);
+
+  page_->SetDirty();
 }
 
 db_size_t TablePage::GetRecordCount() const { return (*lower_ - PAGE_HEADER_SIZE) / sizeof(Slot); }

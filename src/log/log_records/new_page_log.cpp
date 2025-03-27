@@ -1,4 +1,5 @@
 #include "log/log_records/new_page_log.h"
+#include "table/table_page.h"
 
 namespace huadb {
 
@@ -40,6 +41,17 @@ std::shared_ptr<NewPageLog> NewPageLog::DeserializeFrom(lsn_t lsn, const char *d
 
 void NewPageLog::Undo(BufferPool &buffer_pool, Catalog &catalog, LogManager &log_manager, lsn_t undo_next_lsn) {
   // LAB 2 BEGIN
+  auto database_oid = catalog.GetDatabaseOid(oid_);
+
+  auto page = buffer_pool.GetPage(database_oid, oid_, page_id_);
+  TablePage current_table_page(page);
+  auto next_page_id = current_table_page.GetNextPageId();
+
+  if (prev_page_id_ != NULL_PAGE_ID) {
+    auto previous_page = buffer_pool.GetPage(database_oid, oid_, prev_page_id_);
+    TablePage previous_table_page(previous_page);
+    previous_table_page.SetNextPageId(next_page_id);
+  }
 }
 
 void NewPageLog::Redo(BufferPool &buffer_pool, Catalog &catalog, LogManager &log_manager) {
@@ -49,6 +61,24 @@ void NewPageLog::Redo(BufferPool &buffer_pool, Catalog &catalog, LogManager &log
   }
   // 根据日志信息进行重做
   // LAB 2 BEGIN
+
+  auto database_oid = catalog.GetDatabaseOid(oid_);
+
+  pageid_t next_page_id = NULL_PAGE_ID;
+
+  if (prev_page_id_ != NULL_PAGE_ID) {
+    auto previous_page = buffer_pool.GetPage(database_oid, oid_, prev_page_id_);
+    TablePage previous_table_page(previous_page);
+
+    next_page_id = previous_table_page.GetNextPageId();
+    previous_table_page.SetNextPageId(page_id_);
+  }
+
+  auto current_page = buffer_pool.NewPage(database_oid, oid_, page_id_);
+  TablePage current_table_page(current_page);
+  current_table_page.Init();
+
+  current_table_page.SetNextPageId(next_page_id);
 }
 
 oid_t NewPageLog::GetOid() const { return oid_; }

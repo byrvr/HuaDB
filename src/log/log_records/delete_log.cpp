@@ -1,4 +1,6 @@
 #include "log/log_records/delete_log.h"
+#include "table/table_page.h"
+
 
 namespace huadb {
 
@@ -43,6 +45,12 @@ void DeleteLog::Undo(BufferPool &buffer_pool, Catalog &catalog, LogManager &log_
   // 恢复删除的记录
   // 通过 catalog_ 获取 db_oid
   // LAB 2 BEGIN
+
+  auto database_oid = catalog.GetDatabaseOid(oid_);
+  auto page = buffer_pool.GetPage(database_oid, oid_, page_id_);
+  TablePage table_page(page);
+
+  table_page.UndoDeleteRecord(slot_id_);
 }
 
 void DeleteLog::Redo(BufferPool &buffer_pool, Catalog &catalog, LogManager &log_manager) {
@@ -52,6 +60,12 @@ void DeleteLog::Redo(BufferPool &buffer_pool, Catalog &catalog, LogManager &log_
   }
   // 根据日志信息进行重做
   // LAB 2 BEGIN
+
+  auto database_oid = catalog.GetDatabaseOid(oid_);
+  auto page = buffer_pool.GetPage(database_oid, oid_, page_id_);
+  TablePage table_page(page);
+
+  table_page.DeleteRecord(slot_id_, xid_);
 }
 
 oid_t DeleteLog::GetOid() const { return oid_; }

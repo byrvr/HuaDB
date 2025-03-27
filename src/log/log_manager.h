@@ -59,6 +59,11 @@ class LogManager {
   // Redo 次数统计
   uint32_t GetRedoCount() const;
 
+  // Extracts object identifier and page location based on the log record type
+  static std::pair<oid_t, pageid_t> ExtractRecordCoordinates(const std::shared_ptr<LogRecord> &log_entry);
+
+  lsn_t smallest_sequence_num_ = 0;
+
  private:
   // 将 lsn 之前的日志刷到磁盘
   void Flush(lsn_t lsn);

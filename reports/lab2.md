@@ -2,13 +2,11 @@
 
 ###### 罗兰 Ruslan | 2021080066
 
-## Introduction
+## Basic Functionality Implementation and Challenges
 
-This report documents the implementation of transaction processing and fault recovery mechanisms in a database system. The project focuses on ensuring ACID properties by implementing proper logging mechanisms and the ARIES (Algorithm for Recovery and Isolation Exploiting Semantics) recovery algorithm. This implementation guarantees that data remains consistent even in the event of system failures during transaction processing.
+### 1. Transaction Rollback Implementation
 
-## 1. Transaction Rollback Implementation
-
-### 1.1 Log Appending Mechanism
+#### 1.1 Log Appending Mechanism
 
 When modifying pages in the database, it's essential to record these changes in logs for potential rollback. I implemented the logging mechanism for three primary operations:
 
@@ -18,7 +16,7 @@ When modifying pages in the database, it's essential to record these changes in 
 
 These logs provide sufficient information to undo operations when rolling back transactions.
 
-### 1.2 Undo Log Retrieval
+#### 1.2 Undo Log Retrieval
 
 The central component of the rollback mechanism is the `LogManager::Rollback` function. This function:
 
@@ -58,7 +56,7 @@ for (; current_sequence != NULL_LSN; ) {
 }
 ```
 
-### 1.3 Undo Operations Implementation
+#### 1.3 Undo Operations Implementation
 
 For each log type, I implemented specific undo operations:
 
@@ -76,9 +74,9 @@ void TablePage::UndoDeleteRecord(slotid_t slot_id) {
 }
 ```
 
-## 2. Redo Implementation
+### 2. Redo Implementation
 
-### 2.1 Redo Log Retrieval
+#### 2.1 Implementation Approach
 
 For redo operations, I implemented the `LogManager::Redo` function to sequentially process logs:
 
@@ -87,7 +85,9 @@ For redo operations, I implemented the `LogManager::Redo` function to sequential
 3. Determining if the log needs to be applied based on page LSN comparisons
 4. Calling the appropriate `Redo` function for each log record
 
-### 2.2 Redo Operations Implementation
+A key challenge was determining when redo operations should be applied. Since the system uses the WAL (Write-Ahead Logging) protocol, it's important to only redo operations whose effects may not be persisted in the database files. I solved this by comparing log LSNs with page LSNs and only applying changes when necessary.
+
+#### 2.2 Redo Operations Implementation
 
 For each log type, I implemented corresponding redo operations:
 
@@ -118,11 +118,11 @@ void TablePage::RedoInsertRecord(slotid_t slot_id, char *raw_record, db_size_t p
 }
 ```
 
-## 3. ARIES Recovery Algorithm Implementation
+### 3. ARIES Recovery Algorithm Implementation
 
 The ARIES recovery algorithm consists of three phases: Analysis, Redo, and Undo. This design ensures efficient and correct recovery from system failures.
 
-### 3.1 Analysis Phase Implementation
+#### 3.1 Analysis Phase Implementation
 
 In the `LogManager::Analyze` function, I implemented the analysis phase with the following steps:
 
@@ -178,7 +178,7 @@ while (current_position < next_lsn_) {
 }
 ```
 
-### 3.2 Optimized Redo Phase
+#### 3.2 Optimized Redo Phase
 
 I optimized the redo phase implementation to avoid unnecessary redo operations:
 
@@ -189,7 +189,7 @@ I optimized the redo phase implementation to avoid unnecessary redo operations:
 
 This optimization significantly improves recovery performance by limiting operations to only what's necessary.
 
-### 3.3 Undo Phase Implementation
+#### 3.3 Undo Phase Implementation
 
 The undo phase rolls back all active transactions identified during analysis:
 
@@ -214,29 +214,31 @@ void LogManager::Undo() {
 }
 ```
 
-### 3.4 Helper Functions
+## Implementation Challenges and Solutions
 
-To support the ARIES implementation, I created several helper functions:
-
-- `ExtractRecordCoordinates`: Extracts object ID and page ID from different log record types, unifying page coordinate access
-- Type-specific deserialization functions to properly reconstruct log records from raw data
-- LSN tracking mechanisms to determine recovery start points
-
-## 4. Implementation Challenges and Solutions
-
-### 4.1 LSN Management
+### 1. LSN Management
 
 Unlike the theoretical approach where LSNs are simple sequential integers, the implementation uses file positions as LSNs. This required careful handling of LSN comparisons and management to ensure proper ordering during recovery.
 
-### 4.2 Page LSN Tracking
+The LSN implementation presents a unique challenge because it's tied to the physical location in the log file rather than being a simple sequence number. This design choice simplifies log retrieval but complicates tracking log relationships. To address this, I created the `ExtractRecordCoordinates` helper function which standardizes page identification across different log types.
 
-Tracking page LSNs was crucial for determining whether a redo operation should be applied. I implemented proper page LSN updates with each modification and comparisons during recovery to avoid redundant operations.
+### 2. Checkpoint Handling
 
-### 4.3 Log Record Buffer Management
+Finding and processing the checkpoint correctly was a key challenge. The implementation needed to first locate the END_CHECKPOINT record from the checkpoint_lsn and then restore the saved state before processing subsequent logs. This two-phase approach ensures that the recovery process starts from a known consistent state.
 
-Logs could be either in memory or on disk, requiring two distinct retrieval mechanisms. I implemented a unified approach that checks the `flushed_lsn_` value to determine the correct retrieval method.
+### 3. Transaction State Management
 
-## 5. Testing and Verification
+Keeping track of which transactions were active at the time of failure was challenging. The solution involved careful maintenance of the Active Transaction Table (ATT), particularly when processing COMMIT logs to remove completed transactions.
+
+### 4. Memory Buffer vs. Disk Log Handling
+
+The framework manages logs both in memory and on disk, requiring two different retrieval mechanisms. I implemented a unified approach that checks against the `flushed_lsn_` value to determine where to retrieve logs from. This approach keeps the code clean while handling both scenarios correctly.
+
+### 5. Framework-Specific Challenges
+
+One counter-intuitive aspect of the framework is that it uses physical logs for both redo and undo operations, which differs from the theoretical ARIES approach discussed in the course. Adapting to this design required understanding that record deletion is handled by marking rather than physical removal, and there are no index operations to consider in the current implementation.
+
+## Testing and Verification
 
 The implementation successfully passes all required test cases:
 
@@ -250,10 +252,40 @@ For each test, I verified correct behavior by examining:
 2. Proper LSN handling
 3. Correct log record application
 
-## Conclusion
+My implementation strategy involved incrementally implementing and testing each type of log operation. This made it easier to isolate and fix issues specific to each operation type before moving on to the next phase of implementation.
 
-This implementation provides a robust transaction processing and fault recovery system based on the ARIES algorithm. The physical logging approach combined with efficient redo and undo operations ensures that the database maintains ACID properties even in the presence of system failures.
+## Advanced Functionality Design (Not Implemented)
 
-The modular design allows for future extensions, such as implementing compensation logs for failures during undo (as suggested in the advanced tasks). The current implementation successfully balances recovery correctness with performance considerations, particularly in the optimized redo phase that avoids unnecessary operations.
+While I focused on completing the basic functionality with high quality, I've researched the design approaches for the advanced features:
 
-Future work could focus on implementing the advanced features mentioned in the project requirements, particularly the non-blocking checkpoint mechanism and failure recovery during undo operations.
+### 1. Failure Recovery During Undo
+
+To handle failures during the undo process, compensation log records (CLRs) would need to be implemented. These special log records:
+
+- Would contain information to compensate for an undo operation
+- Would have a specific "next undo LSN" pointer to skip already undone operations
+- Would not themselves be undone during recovery
+
+### 2. Non-blocking Checkpoint Mechanism
+
+For a non-blocking checkpoint implementation, the `LogManager::Checkpoint` function would need to:
+
+- Create a snapshot of the current state asynchronously
+- Use a separate thread for writing checkpoint data to disk
+- Employ proper synchronization mechanisms to ensure consistency
+
+## Time Spent on the Project
+
+- Understanding the framework and project requirements: ~5 hours
+- Implementing Task 1 (Transaction Rollback): ~8 hours
+- Implementing Task 2 (Redo): ~6 hours
+- Implementing Task 3 (ARIES Recovery): ~10 hours
+- Testing and debugging: ~8 hours
+- Report writing: ~3 hours
+- Total time: ~40 hours
+
+## Honor Code
+
+1. I have completed this assignment independently and have not copied code from any other student or external source. Where I have discussed implementation strategies with others or referenced existing resources, I have explicitly noted this in my report.
+2. I have not used GitHub Copilot, ChatGPT, or any other AI tools for automatic code completion in this project.
+3. I have not and will not share my code in any public repository or with other students in ways that might facilitate academic dishonesty.

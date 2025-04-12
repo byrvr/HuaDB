@@ -15,6 +15,22 @@ std::shared_ptr<Record> LockRowsExecutor::Next() {
   }
   // 根据 plan_ 的 lock type 获取正确的锁，加锁失败时抛出异常
   // LAB 3 BEGIN
+
+  auto oid = plan_->GetOid();
+  auto lock_type = plan_->GetLockType();
+  auto transaction_id = context_.GetXid();
+  auto rid = record->GetRid();
+  auto &lock_mgr = context_.GetLockManager();
+
+  if (lock_type == SelectLockType::SHARE) {
+      if (!lock_mgr.LockRow(transaction_id, LockType::S, oid, rid)) {
+          throw DbException("set lock s failed");
+      }
+  } else if (lock_type == SelectLockType::UPDATE) {
+      if (!lock_mgr.LockRow(transaction_id, LockType::X, oid, rid)) {
+          throw DbException("set lock x failed");
+      }
+  }
   return record;
 }
 

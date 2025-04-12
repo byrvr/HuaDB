@@ -107,6 +107,10 @@ void TablePage::UndoDeleteRecord(slotid_t slot_id) {
 
   // 修改 undo delete 的逻辑
   // LAB 3 BEGIN
+
+  auto* record_xmax = reinterpret_cast<xid_t*>(record_ptr + 5);
+  *record_xmax = NULL_XID;
+  page_->SetDirty();
 }
 
 void TablePage::RedoInsertRecord(slotid_t slot_id, char *raw_record, db_size_t page_offset, db_size_t record_size) {

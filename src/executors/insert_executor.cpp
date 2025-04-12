@@ -27,7 +27,18 @@ std::shared_ptr<Record> InsertExecutor::Next() {
     auto table_record = std::make_shared<Record>(std::move(values));
     // 通过 context_ 获取正确的锁，加锁失败时抛出异常
     // LAB 3 BEGIN
-    auto rid = table_->InsertRecord(std::move(table_record), context_.GetXid(), context_.GetCid(), true);
+    
+    auto &lock_mgr = context_.GetLockManager();
+    auto transaction_id = context_.GetXid();
+    auto object_id = table_->GetOid();
+
+    if (!lock_mgr.LockTable(transaction_id, LockType::IX, object_id)) {
+        throw DbException("Failed to acquire IX lock on the table for insertion");
+    }
+    auto record_id = table_->InsertRecord(std::move(table_record), context_.GetXid(), context_.GetCid(), true);
+    if (!lock_mgr.LockRow(transaction_id, LockType::X, object_id, record_id)) {
+        throw DbException("Failed to acquire X lock on the row for insertion");
+    }
     count++;
   }
   finished_ = true;

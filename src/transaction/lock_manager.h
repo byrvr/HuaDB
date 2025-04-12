@@ -17,6 +17,13 @@ enum class LockGranularity { TABLE, ROW };
 // 高级功能：死锁预防/检测类型
 enum class DeadlockType { NONE, WAIT_DIE, WOUND_WAIT, DETECTION };
 
+typedef struct {
+  LockType lock_type_;
+  LockGranularity lock_granularity_;
+  xid_t xid_t_;
+  Rid rid_;
+} ResourceLock;
+
 class LockManager {
  public:
   // 获取表级锁
@@ -29,6 +36,18 @@ class LockManager {
 
   void SetDeadLockType(DeadlockType deadlock_type);
 
+  const std::vector<std::vector<bool>> lock_compatibility_map_ = {{true,  true,  true,  true,  false},
+                                                              {true,  true,  false, false, false},
+                                                              {true,  false, true,  false, false},
+                                                              {true,  false, false, false, false},
+                                                              {false, false, false, false, false}};
+
+  const std::vector<std::vector<LockType>> lock_upgrade_map_ = {{LockType::IS,  LockType::IX, LockType::S,  LockType::SIX, LockType::X},
+                                                              {LockType::IX,  LockType::IX, LockType::SIX, LockType::SIX, LockType::X},
+                                                              {LockType::S,   LockType::SIX, LockType::S,  LockType::SIX, LockType::X},
+                                                              {LockType::SIX, LockType::SIX,LockType::SIX,LockType::SIX, LockType::X},
+                                                              {LockType::X,   LockType::X,  LockType::X,  LockType::X,   LockType::X}};
+
  private:
   // 判断锁的相容性
   bool Compatible(LockType type_a, LockType type_b) const;
@@ -36,6 +55,8 @@ class LockManager {
   LockType Upgrade(LockType self, LockType other) const;
 
   DeadlockType deadlock_type_ = DeadlockType::NONE;
+
+  std::unordered_map<oid_t, std::vector<ResourceLock>> resource_locks_;
 };
 
 }  // namespace huadb

@@ -24,7 +24,25 @@ std::shared_ptr<Record> UpdateExecutor::Next() {
     auto new_record = std::make_shared<Record>(std::move(values));
     // 通过 context_ 获取正确的锁，加锁失败时抛出异常
     // LAB 3 BEGIN
-    auto rid = table_->UpdateRecord(record->GetRid(), context_.GetXid(), context_.GetCid(), new_record, true);
+
+    auto &lock_mgr = context_.GetLockManager();
+    auto transaction_id = context_.GetXid();
+    auto object_id = table_->GetOid();
+
+    if (!lock_mgr.LockTable(transaction_id, LockType::IX, object_id)) {
+        throw DbException("Failed to acquire IX lock on the table for update");
+    }
+    
+    auto record_id = table_->UpdateRecord(record->GetRid(), context_.GetXid(), context_.GetCid(), new_record, true);
+
+    if (!lock_mgr.LockRow(transaction_id, LockType::X, object_id, record_id)) {
+        throw DbException("Failed to acquire X lock on the row for update");
+    }
+
+    if (!lock_mgr.LockRow(transaction_id, LockType::X, object_id, record->GetRid())) {
+        throw DbException("Failed to acquire X lock on the row for update");
+    }
+
     count++;
   }
   finished_ = true;

@@ -1,7 +1,9 @@
 #pragma once
 
+#include <set>
 #include "catalog/catalog.h"
 #include "operators/operator.h"
+#include "operators/expressions/expression.h"
 
 namespace huadb {
 
@@ -26,6 +28,14 @@ class Optimizer {
   JoinOrderAlgorithm join_order_algorithm_;
   bool enable_projection_pushdown_;
   Catalog &catalog_;
+
+  // Predicate tracking collections
+  // Pairs store the predicate expression and whether it was successfully pushed down
+  std::vector<std::pair<std::shared_ptr<OperatorExpression>, bool>> join_conditions_;  // Join predicates
+  std::vector<std::pair<std::shared_ptr<OperatorExpression>, bool>> filter_conditions_; // Regular predicates
+
+  // Table name tracking for join predicate pushdown
+  std::set<std::string> table_names_;
 };
 
 }  // namespace huadb

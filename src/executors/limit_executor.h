@@ -13,6 +13,8 @@ class LimitExecutor : public Executor {
 
  private:
   std::shared_ptr<const LimitOperator> plan_;
+  uint32_t offset_; // Records to skip
+  uint32_t count_;  // Records to return
 };
 
 }  // namespace huadb

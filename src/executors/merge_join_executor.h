@@ -1,7 +1,10 @@
 #pragma once
 
+#include <memory>
+#include <vector>
 #include "executors/executor.h"
 #include "operators/merge_join_operator.h"
+#include "table/record.h"
 
 namespace huadb {
 
@@ -14,6 +17,10 @@ class MergeJoinExecutor : public Executor {
 
  private:
   std::shared_ptr<const MergeJoinOperator> plan_;
+  std::shared_ptr<Record> r_record_;
+  std::shared_ptr<Record> s_record_;
+  std::vector<std::shared_ptr<Record>> last_match_;
+  int index_;
 };
 
 }  // namespace huadb
